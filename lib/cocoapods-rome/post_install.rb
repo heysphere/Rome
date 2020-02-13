@@ -4,11 +4,11 @@ PLATFORMS = { 'iphonesimulator' => 'iOS',
               'appletvsimulator' => 'tvOS',
               'watchsimulator' => 'watchOS' }
 
-def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, configuration)
+def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, configuration, skip_device_build)
   deployment_target = target.platform_deployment_target
   target_label = target.cocoapods_target_label
 
-  xcodebuild(sandbox, target_label, device, deployment_target, configuration)
+  xcodebuild(sandbox, target_label, device, deployment_target, configuration) unless skip_device_build
   xcodebuild(sandbox, target_label, simulator, deployment_target, configuration)
 
   spec_names = target.specs.map { |spec| [spec.root.name, spec.root.module_name] }.uniq
@@ -20,13 +20,15 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
 
     next unless File.file?(device_lib) && File.file?(simulator_lib)
 
-    lipo_log = `lipo -create -output #{executable_path} #{device_lib} #{simulator_lib}`
+    lipo_log = `lipo -create -output #{executable_path} #{device_lib} #{simulator_lib}` unless skip_device_build
+    lipo_log = `lipo -create -output #{executable_path} #{simulator_lib}` if skip_device_build
     puts lipo_log unless File.exist?(executable_path)
 
     FileUtils.mv executable_path, device_lib, :force => true
-    FileUtils.mv device_framework_lib, build_dir, :force => true
+    FileUtils.mv device_framework_lib, build_dir, :force => true unless skip_device_build
+    FileUtils.mv simulator_lib, build_dir, :force => true if skip_device_build
     FileUtils.rm simulator_lib if File.file?(simulator_lib)
-    FileUtils.rm device_lib if File.file?(device_lib)
+    FileUtils.rm device_lib if !skip_device_build && File.file?(device_lib)
   end
 end
 
@@ -74,6 +76,8 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
 
   build_dir = sandbox_root.parent + 'build'
   destination = sandbox_root.parent + 'Rome'
+  
+  skip_device_build = user_options["skip_device_build"] || false
 
   Pod::UI.puts 'Building frameworks'
 
@@ -81,10 +85,10 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
   targets = installer_context.umbrella_targets.select { |t| t.specs.any? }
   targets.each do |target|
     case target.platform_name
-    when :ios then build_for_iosish_platform(sandbox, build_dir, target, 'iphoneos', 'iphonesimulator', configuration)
+    when :ios then build_for_iosish_platform(sandbox, build_dir, target, 'iphoneos', 'iphonesimulator', configuration, skip_device_build)
     when :osx then xcodebuild(sandbox, target.cocoapods_target_label, configuration)
-    when :tvos then build_for_iosish_platform(sandbox, build_dir, target, 'appletvos', 'appletvsimulator', configuration)
-    when :watchos then build_for_iosish_platform(sandbox, build_dir, target, 'watchos', 'watchsimulator', configuration)
+    when :tvos then build_for_iosish_platform(sandbox, build_dir, target, 'appletvos', 'appletvsimulator', configuration, skip_device_build)
+    when :watchos then build_for_iosish_platform(sandbox, build_dir, target, 'watchos', 'watchsimulator', configuration, skip_device_build)
     else raise "Unknown platform '#{target.platform_name}'" end
   end
 
