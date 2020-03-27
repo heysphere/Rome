@@ -42,11 +42,12 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
 end
 
 def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, destination_override=nil, configuration)
-  args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target} -configuration #{configuration})
+  args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target})
   platform = PLATFORMS[sdk]
   args += %W(-sdk #{sdk}) if destination_override.nil?
   args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) if destination_override.nil? && !platform.nil? 
   args += destination_override unless destination_override.nil?
+  args += %W(-configuration #{configuration})
 
   Pod::Executable.execute_command 'xcodebuild', args, true
 end
