@@ -15,7 +15,7 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
   xcodebuild(sandbox, target_label, simulator, deployment_target, configuration)
 
   if build_catalyst
-    xcodebuild(sandbox, target_label, "macosx", nil, ["-destination", Shellwords.escape("'platform=macOS,arch=x86_64,variant=Mac Catalyst'")], configuration)
+    xcodebuild(sandbox, target_label, "macosx", nil, ["-destination", "'platform=macOS,arch=x86_64,variant=Mac Catalyst'"], configuration)
   end
 
   spec_names = target.specs.map { |spec| [spec.root.name, spec.root.module_name] }.uniq
@@ -47,7 +47,8 @@ def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, destination
   args += %W(-sdk #{sdk}) if destination_override.nil?
   args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) if destination_override.nil? && !platform.nil? 
   args += destination_override unless destination_override.nil?
-  Pod::Executable.execute_command 'xcodebuild', args, true
+
+  `xcodebuild #{args.map(&:to_s).join(" ")}`
 end
 
 def enable_debug_information(project_path, configuration)
