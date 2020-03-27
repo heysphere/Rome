@@ -14,7 +14,7 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
   xcodebuild(sandbox, target_label, simulator, deployment_target, configuration)
 
   if build_catalyst
-    xcodebuild(sandbox, target_label, "macosx", nil, %w(ARCHS="x86_64h" -destination 'platform=macOS,variant=Mac Catalyst'), configuration)
+    xcodebuild(sandbox, target_label, "macosx", nil, %w(ARCHS="x86_64h" -destination 'platform=macOS,variant=Mac\ Catalyst'), configuration)
   end
 
   spec_names = target.specs.map { |spec| [spec.root.name, spec.root.module_name] }.uniq
