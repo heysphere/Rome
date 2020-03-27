@@ -43,7 +43,7 @@ end
 def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, destination_override=nil, configuration)
   args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target} -configuration #{configuration} -sdk #{sdk})
   platform = PLATFORMS[sdk]
-  args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) if destination_override.nil? && not platform.nil? 
+  args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) if destination_override.nil? && !platform.nil? 
   args += destination_override unless destination_override.nil?
   Pod::Executable.execute_command 'xcodebuild', args, true
 end
