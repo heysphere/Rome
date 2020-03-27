@@ -14,7 +14,7 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
   xcodebuild(sandbox, target_label, simulator, deployment_target, configuration)
 
   if build_catalyst
-    xcodebuild(sandbox, target_label, "macosx", configuration, "ARCHS=\"x86_64h\" -destination 'platform=macOS,variant=Mac Catalyst'")
+    xcodebuild(sandbox, target_label, "macosx", destination_override: "ARCHS=\"x86_64h\" -destination 'platform=macOS,variant=Mac Catalyst'", configuration)
   end
 
   spec_names = target.specs.map { |spec| [spec.root.name, spec.root.module_name] }.uniq
@@ -40,7 +40,7 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
   end
 end
 
-def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, configuration, destination_override=nil)
+def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, destination_override=nil, configuration)
   args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target} -configuration #{configuration} -sdk #{sdk})
   platform = PLATFORMS[sdk]
   args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) unless platform.nil? && destination_override.nil?
