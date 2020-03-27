@@ -8,8 +8,14 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
   deployment_target = target.platform_deployment_target
   target_label = target.cocoapods_target_label
 
+  build_catalyst = target.platform_name == :ios
+
   xcodebuild(sandbox, target_label, device, deployment_target, configuration)
   xcodebuild(sandbox, target_label, simulator, deployment_target, configuration)
+
+  if build_catalyst
+    xcodebuild(sandbox, target_label, "macosx", configuration, "ARCHS=\"x86_64h\" -destination 'platform=macOS,variant=Mac Catalyst'")
+  end
 
   spec_names = target.specs.map { |spec| [spec.root.name, spec.root.module_name] }.uniq
   spec_names.each do |root_name, module_name|
@@ -18,22 +24,27 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
     device_framework_lib = File.dirname(device_lib)
     simulator_lib = "#{build_dir}/#{configuration}-#{simulator}/#{root_name}/#{module_name}.framework/#{module_name}"
 
-    next unless File.file?(device_lib) && File.file?(simulator_lib)
+    catalyst_lib = "#{build_dir}/#{configuration}-maccatalyst/#{root_name}/#{module_name}.framework/#{module_name}" if build_catalyst
+    catalyst_lib = "" unless build_catalyst
 
-    lipo_log = `lipo -create -output #{executable_path} #{device_lib} #{simulator_lib}`
+    next unless File.file?(device_lib) && File.file?(simulator_lib) && (not build_catalyst || File.file?(catalyst_lib))
+
+    lipo_log = `lipo -create -output #{executable_path} #{device_lib} #{simulator_lib} #{catalyst_lib}`
     puts lipo_log unless File.exist?(executable_path)
 
     FileUtils.mv executable_path, device_lib, :force => true
     FileUtils.mv device_framework_lib, build_dir, :force => true
     FileUtils.rm simulator_lib if File.file?(simulator_lib)
+    FileUtils.rm catalyst_lib if build_catalyst && File.file?(catalyst_lib)
     FileUtils.rm device_lib if File.file?(device_lib)
   end
 end
 
-def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, configuration)
+def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, configuration, destination_override=nil)
   args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target} -configuration #{configuration} -sdk #{sdk})
   platform = PLATFORMS[sdk]
-  args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) unless platform.nil?
+  args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) unless platform.nil? && destination_override.nil?
+  args += destination_override unless destination_override.nil?
   Pod::Executable.execute_command 'xcodebuild', args, true
 end
 
