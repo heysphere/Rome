@@ -25,7 +25,7 @@ def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, con
     device_framework_lib = File.dirname(device_lib)
     simulator_lib = "#{build_dir}/#{configuration}-#{simulator}/#{root_name}/#{module_name}.framework/#{module_name}"
 
-    catalyst_lib = "#{build_dir}/#{configuration}-maccatalyst/#{root_name}/#{module_name}.framework/#{module_name}" if build_catalyst
+    catalyst_lib = "#{build_dir}/#{configuration}-maccatalyst/#{root_name}/#{module_name}.framework/Versions/Current/#{module_name}" if build_catalyst
     catalyst_lib = "" unless build_catalyst
 
     next unless File.file?(device_lib) && File.file?(simulator_lib) && (not build_catalyst || File.file?(catalyst_lib))
