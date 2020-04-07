@@ -92,7 +92,7 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
 
   Pod::UI.puts 'Building frameworks'
 
-  build_dir.rmtree if build_dir.directory?
+  #build_dir.rmtree if build_dir.directory?
   targets = installer_context.umbrella_targets.select { |t| t.specs.any? }
   targets.each do |target|
     case target.platform_name
