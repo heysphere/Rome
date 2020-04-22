@@ -4,36 +4,51 @@ PLATFORMS = { 'iphonesimulator' => 'iOS',
               'appletvsimulator' => 'tvOS',
               'watchsimulator' => 'watchOS' }
 
-def build_for_iosish_platform(sandbox, build_dir, target, device, simulator, configuration)
+def build_for_platform(sandbox, build_dir, target, sdks, configuration, enable_bitcode)
   deployment_target = target.platform_deployment_target
   target_label = target.cocoapods_target_label
-
-  xcodebuild(sandbox, target_label, device, deployment_target, configuration)
-  xcodebuild(sandbox, target_label, simulator, deployment_target, configuration)
-
   spec_names = target.specs.map { |spec| [spec.root.name, spec.root.module_name] }.uniq
-  spec_names.each do |root_name, module_name|
-    executable_path = "#{build_dir}/#{root_name}"
-    device_lib = "#{build_dir}/#{configuration}-#{device}/#{root_name}/#{module_name}.framework/#{module_name}"
-    device_framework_lib = File.dirname(device_lib)
-    simulator_lib = "#{build_dir}/#{configuration}-#{simulator}/#{root_name}/#{module_name}.framework/#{module_name}"
 
-    next unless File.file?(device_lib) && File.file?(simulator_lib)
+  all_modules_csv = spec_names.map { |x, module_name| module_name }.join(", ")
 
-    lipo_log = `lipo -create -output #{executable_path} #{device_lib} #{simulator_lib}`
-    puts lipo_log unless File.exist?(executable_path)
+  Pod::UI.puts "[*] #{target_label}"
+  Pod::UI.puts "Pods: #{all_modules_csv}"
+  Pod::UI.puts ""
 
-    FileUtils.mv executable_path, device_lib, :force => true
-    FileUtils.mv device_framework_lib, build_dir, :force => true
-    FileUtils.rm simulator_lib if File.file?(simulator_lib)
-    FileUtils.rm device_lib if File.file?(device_lib)
+  sdks.each do |sdk|
+    Pod::UI.puts "  - Building for #{target.platform_name} platform and #{sdk} sdk"
+    xcodebuild(sandbox, target_label, sdk, deployment_target, configuration, enable_bitcode)
+
+    spec_names.each do |root_name, module_name|
+      pod_build_dir = "#{build_dir}/#{configuration}-#{sdk}/#{root_name}"
+      src = "#{pod_build_dir}/#{module_name}.framework"
+      dest = "#{build_dir}/#{configuration}-#{sdk}/#{module_name}.framework"
+
+      next unless File.directory?(src)
+
+      FileUtils.cp_r src, dest, :remove_destination => true
+      FileUtils.remove_dir pod_build_dir
+    end
   end
+
+  Pod::UI.puts ""
 end
 
-def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, configuration)
-  args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target} -configuration #{configuration} -sdk #{sdk})
-  platform = PLATFORMS[sdk]
-  args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) unless platform.nil?
+def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, configuration, enable_bitcode)
+  args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target} -configuration #{configuration})
+
+  if sdk == "maccatalyst"
+    args += ['-destination', "platform=macOS,arch=x86_64,variant=Mac Catalyst"]
+    args += ["CODE_SIGN_IDENTITY=-"]
+  else
+    args += %W(-sdk #{sdk})
+
+    platform = PLATFORMS[sdk]
+    args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) unless platform.nil?
+  end
+
+  args << "BITCODE_GENERATION_MODE=bitcode" if enable_bitcode
+
   Pod::Executable.execute_command 'xcodebuild', args, true
 end
 
@@ -63,6 +78,9 @@ end
 Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_context, user_options|
   enable_dsym = user_options.fetch('dsym', true)
   configuration = user_options.fetch('configuration', 'Debug')
+  enable_bitcode = user_options.fetch('enable_bitcode', false)
+  build_ios_catalyst = user_options.fetch('build_ios_catalyst', false)
+
   if user_options["pre_compile"]
     user_options["pre_compile"].call(installer_context)
   end
@@ -80,24 +98,26 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
   build_dir.rmtree if build_dir.directory?
   targets = installer_context.umbrella_targets.select { |t| t.specs.any? }
   targets.each do |target|
+    sdks = []
+
     case target.platform_name
-    when :ios then build_for_iosish_platform(sandbox, build_dir, target, 'iphoneos', 'iphonesimulator', configuration)
-    when :osx then xcodebuild(sandbox, target.cocoapods_target_label, configuration)
-    when :tvos then build_for_iosish_platform(sandbox, build_dir, target, 'appletvos', 'appletvsimulator', configuration)
-    when :watchos then build_for_iosish_platform(sandbox, build_dir, target, 'watchos', 'watchsimulator', configuration)
+    when :ios then sdks = [(build_ios_catalyst ? 'maccatalyst' : nil), 'iphoneos', 'iphonesimulator'].compact
+    when :osx then sdks = ['macosx']
+    when :tvos then sdks = ['appletvos', 'appletvsimulator']
+    when :watchos then sdks = ['watchos', 'watchsimulator']
     else raise "Unknown platform '#{target.platform_name}'" end
+
+    build_for_platform(sandbox, build_dir, target, sdks, configuration, enable_bitcode)
   end
 
   raise Pod::Informative, 'The build directory was not found in the expected location.' unless build_dir.directory?
 
   # Make sure the device target overwrites anything in the simulator build, otherwise iTunesConnect
   # can get upset about Info.plist containing references to the simulator SDK
-  frameworks = Pathname.glob("build/*/*/*.framework").reject { |f| f.to_s =~ /Pods[^.]+\.framework/ }
-  frameworks += Pathname.glob("build/*.framework").reject { |f| f.to_s =~ /Pods[^.]+\.framework/ }
+  built_products = Pathname.glob("build/#{configuration}-*")
 
   resources = []
-
-  Pod::UI.puts "Built #{frameworks.count} #{'frameworks'.pluralize(frameworks.count)}"
+  copy_frameworks = []
 
   destination.rmtree if destination.directory?
 
@@ -105,19 +125,21 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
     umbrella.specs.each do |spec|
       consumer = spec.consumer(umbrella.platform_name)
       file_accessor = Pod::Sandbox::FileAccessor.new(sandbox.pod_dir(spec.root.name), consumer)
-      frameworks += file_accessor.vendored_libraries
-      frameworks += file_accessor.vendored_frameworks
+      copy_frameworks += file_accessor.vendored_libraries
+      copy_frameworks += file_accessor.vendored_frameworks
       resources += file_accessor.resources
     end
   end
-  frameworks.uniq!
+
+  built_products.uniq!
+  copy_frameworks.uniq!
   resources.uniq!
 
-  Pod::UI.puts "Copying #{frameworks.count} #{'frameworks'.pluralize(frameworks.count)} " \
-    "to `#{destination.relative_path_from Pathname.pwd}`"
+  Pod::UI.puts "Copying built products, resources and vendored products to `#{destination.relative_path_from Pathname.pwd}`"
 
   FileUtils.mkdir_p destination
-  (frameworks + resources).each do |file|
+  
+  (resources + copy_frameworks + built_products).each do |file|
     FileUtils.cp_r file, destination, :remove_destination => true
   end
 
