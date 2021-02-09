@@ -4,11 +4,16 @@ PLATFORMS = { 'iphonesimulator' => 'iOS',
               'appletvsimulator' => 'tvOS',
               'watchsimulator' => 'watchOS' }
 
-def build_for_platform(sandbox, build_dir, target, sdks, configuration, enable_bitcode)
-  deployment_target = target.platform_deployment_target
+def build_all_targets_for_platform(sandbox, sdks, configuration, enable_bitcode)
+  sdks.each do |sdk|
+    Pod::UI.puts "[*] Building all Pods for #{sdk} sdk"
+    xcodebuild_all_targets(sandbox, configuration, enable_bitcode, sdk)
+  end
+end
+
+def merge_frameworks(build_dir, target, sdks, configuration)
   target_label = target.cocoapods_target_label
   spec_names = target.specs.map { |spec| [spec.root.name, spec.root.module_name] }.uniq
-
   all_modules_csv = spec_names.map { |x, module_name| module_name }.join(", ")
 
   Pod::UI.puts "[*] #{target_label}"
@@ -16,8 +21,7 @@ def build_for_platform(sandbox, build_dir, target, sdks, configuration, enable_b
   Pod::UI.puts ""
 
   sdks.each do |sdk|
-    Pod::UI.puts "  - Building for #{target.platform_name} platform and #{sdk} sdk"
-    xcodebuild(sandbox, target_label, sdk, deployment_target, configuration, enable_bitcode)
+    Pod::UI.puts "  - Copying #{target.platform_name} platform and #{sdk} sdk"
 
     spec_names.each do |root_name, module_name|
       pod_build_dir = "#{build_dir}/#{configuration}-#{sdk}/#{root_name}"
@@ -34,8 +38,8 @@ def build_for_platform(sandbox, build_dir, target, sdks, configuration, enable_b
   Pod::UI.puts ""
 end
 
-def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, configuration, enable_bitcode)
-  args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target} -configuration #{configuration})
+def xcodebuild_all_targets(sandbox, configuration, enable_bitcode, sdk)
+  args = %W(-project #{sandbox.project_path.realdirpath} -alltargets -configuration #{configuration})
 
   if sdk == "maccatalyst"
     args += ['-destination', "platform=macOS,arch=x86_64,variant=Mac Catalyst"]
@@ -44,11 +48,9 @@ def xcodebuild(sandbox, target, sdk='macosx', deployment_target=nil, configurati
     args += %W(-sdk #{sdk})
 
     platform = PLATFORMS[sdk]
-    args += Fourflusher::SimControl.new.destination(:oldest, platform, deployment_target) unless platform.nil?
   end
 
   args << "BITCODE_GENERATION_MODE=bitcode" if enable_bitcode
-
   Pod::Executable.execute_command 'xcodebuild', args, true
 end
 
@@ -96,18 +98,24 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
   Pod::UI.puts 'Building frameworks'
 
   build_dir.rmtree if build_dir.directory?
-  targets = installer_context.umbrella_targets.select { |t| t.specs.any? }
-  targets.each do |target|
+  platforms = installer_context.umbrella_targets.map { |t| t.platform_name }.uniq
+
+  platforms.each do |platform|
     sdks = []
 
-    case target.platform_name
+    case platform
     when :ios then sdks = [(build_ios_catalyst ? 'maccatalyst' : nil), 'iphoneos', 'iphonesimulator'].compact
     when :osx then sdks = ['macosx']
     when :tvos then sdks = ['appletvos', 'appletvsimulator']
     when :watchos then sdks = ['watchos', 'watchsimulator']
     else raise "Unknown platform '#{target.platform_name}'" end
 
-    build_for_platform(sandbox, build_dir, target, sdks, configuration, enable_bitcode)
+    build_all_targets_for_platform(sandbox, sdks, configuration, enable_bitcode)
+
+    targets = installer_context.umbrella_targets.select { |t| t.specs.any? && t.platform_name == platform }
+    targets.each do |target|
+        merge_frameworks(build_dir, target, sdks, configuration)
+    end
   end
 
   raise Pod::Informative, 'The build directory was not found in the expected location.' unless build_dir.directory?
