@@ -95,7 +95,6 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
 
   Pod::UI.puts 'Building frameworks'
 
-  build_dir.rmtree if build_dir.directory?
   platforms = installer_context.umbrella_targets.map { |t| t.platform_name }.uniq
 
   platforms.each do |platform|
