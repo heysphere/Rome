@@ -4,10 +4,10 @@ PLATFORMS = { 'iphonesimulator' => 'iOS',
               'appletvsimulator' => 'tvOS',
               'watchsimulator' => 'watchOS' }
 
-def build_all_targets_for_platform(sandbox, sdks, configuration, enable_bitcode)
+def build_all_targets_for_platform(sandbox, umbrella_targets, sdks, configuration, enable_bitcode)
   sdks.each do |sdk|
     Pod::UI.puts "[*] Building all Pods for #{sdk} sdk"
-    xcodebuild_all_targets(sandbox, configuration, enable_bitcode, sdk)
+    xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
   end
 end
 
@@ -37,19 +37,28 @@ def merge_frameworks(build_dir, target, sdks, configuration)
   Pod::UI.puts ""
 end
 
-def xcodebuild_all_targets(sandbox, configuration, enable_bitcode, sdk)
-  args = %W(-project #{sandbox.project_path.realdirpath} -alltargets -configuration #{configuration})
-
+def xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
   if sdk == "maccatalyst"
-    args += ['-destination', "platform=macOS,arch=x86_64,variant=Mac Catalyst"]
-  else
-    args += %W(-sdk #{sdk})
-
-    platform = PLATFORMS[sdk]
+    # Mac Catalyst cannot be built using `-alltargets`. So we have to fallback to
+    # build scheme by scheme.
+    xcodebuild_all_targets_catalyst(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
+    return
   end
 
+  args = %W(-project #{sandbox.project_path.realdirpath} -alltargets -configuration #{configuration})
+  args += %W(-sdk #{sdk})
   args << "BITCODE_GENERATION_MODE=bitcode" if enable_bitcode
+
   Pod::Executable.execute_command 'xcodebuild', args, true
+end
+
+def xcodebuild_all_targets_catalyst(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
+  umbrella_targets.each do |target|
+    args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target.cocoapods_target_label} -configuration #{configuration})
+    args += ['-destination', "platform=macOS,arch=x86_64,variant=Mac Catalyst"]
+    args << "BITCODE_GENERATION_MODE=bitcode" if enable_bitcode
+    Pod::Executable.execute_command 'xcodebuild', args, true
+  end
 end
 
 def enable_debug_information(project_path, configuration)
@@ -107,10 +116,10 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
     when :watchos then sdks = ['watchos', 'watchsimulator']
     else raise "Unknown platform '#{target.platform_name}'" end
 
-    build_all_targets_for_platform(sandbox, sdks, configuration, enable_bitcode)
+    umbrella_targets = installer_context.umbrella_targets.select { |t| t.specs.any? && t.platform_name == platform }
+    build_all_targets_for_platform(sandbox, umbrella_targets, sdks, configuration, enable_bitcode)
 
-    targets = installer_context.umbrella_targets.select { |t| t.specs.any? && t.platform_name == platform }
-    targets.each do |target|
+    umbrella_targets.each do |target|
         merge_frameworks(build_dir, target, sdks, configuration)
     end
   end
