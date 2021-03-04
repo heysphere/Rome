@@ -43,7 +43,6 @@ def xcodebuild_all_targets(sandbox, configuration, enable_bitcode, sdk)
 
   if sdk == "maccatalyst"
     args += ['-destination', "platform=macOS,arch=x86_64,variant=Mac Catalyst"]
-    args += ["CODE_SIGN_IDENTITY=-"]
   else
     args += %W(-sdk #{sdk})
 
