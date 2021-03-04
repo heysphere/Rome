@@ -89,6 +89,7 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
   configuration = user_options.fetch('configuration', 'Debug')
   enable_bitcode = user_options.fetch('enable_bitcode', false)
   build_ios_catalyst = user_options.fetch('build_ios_catalyst', false)
+  skipping_umbrella_targets = user_options.fetch('skipping_umbrella_targets', [])
 
   if user_options["pre_compile"]
     user_options["pre_compile"].call(installer_context)
@@ -116,7 +117,8 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
     when :watchos then sdks = ['watchos', 'watchsimulator']
     else raise "Unknown platform '#{target.platform_name}'" end
 
-    umbrella_targets = installer_context.umbrella_targets.select { |t| t.specs.any? && t.platform_name == platform }
+    umbrella_targets = installer_context.umbrella_targets
+      .select { |t| t.specs.any? && t.platform_name == platform && !skipping_umbrella_targets.include?(t.cocoapods_target_label) }
     build_all_targets_for_platform(sandbox, umbrella_targets, sdks, configuration, enable_bitcode)
 
     umbrella_targets.each do |target|
