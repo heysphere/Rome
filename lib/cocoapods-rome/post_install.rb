@@ -4,6 +4,26 @@ PLATFORMS = { 'iphonesimulator' => 'iOS',
               'appletvsimulator' => 'tvOS',
               'watchsimulator' => 'watchOS' }
 
+DESTINATIONS = {
+  ios: [
+    {
+      sdk: :maccatalyst,
+      dest: "generic/platform=macOS,variant=Mac Catalyst"
+    },
+    {
+      sdk: :iphonesimulator,
+      dest: "generic/platform=iOS Simulator"
+    },
+    {
+      sdk: :iphoneos,
+      dest: "generic/platform=iOS"
+    }
+  ],
+  osx: [],
+  tvos: [],
+  watchos: []
+}
+
 def merge_frameworks(build_dir, target, sdks, configuration)
   target_label = target.cocoapods_target_label
   spec_names = target.specs.map { |spec| [spec.root.name, spec.root.module_name] }.uniq
@@ -30,28 +50,11 @@ def merge_frameworks(build_dir, target, sdks, configuration)
   Pod::UI.puts ""
 end
 
-def xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
-  if sdk == "maccatalyst"
-    # Mac Catalyst cannot be built using `-alltargets`. So we have to fallback to
-    # build scheme by scheme.
-    xcodebuild_all_targets_catalyst(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
-    return
-  end
-
-  args = %W(-project #{sandbox.project_path.realdirpath} -alltargets -configuration #{configuration})
-  args += %W(-sdk #{sdk})
+def xcodebuild_all_targets_by_destination(sandbox, target, configuration, enable_bitcode, sdk, destination)
+  args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target.cocoapods_target_label} -configuration #{configuration})
+  args += ['-destination', destination]
   args << "BITCODE_GENERATION_MODE=bitcode" if enable_bitcode
-
   Pod::Executable.execute_command 'xcodebuild', args, true
-end
-
-def xcodebuild_all_targets_catalyst(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
-  umbrella_targets.each do |target|
-    args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target.cocoapods_target_label} -configuration #{configuration})
-    args += ['-destination', "platform=macOS,arch=x86_64,variant=Mac Catalyst"]
-    args << "BITCODE_GENERATION_MODE=bitcode" if enable_bitcode
-    Pod::Executable.execute_command 'xcodebuild', args, true
-  end
 end
 
 def enable_debug_information(project_path, configuration)
@@ -94,46 +97,83 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
   enable_debug_information(sandbox.project_path, configuration) if enable_dsym
 
   build_dir = sandbox_root.parent + 'build'
-  destination = sandbox_root.parent + 'Rome'
+  rome_dir = sandbox_root.parent + 'Rome'
 
   Pod::UI.puts 'Building frameworks'
 
   platforms = installer_context.umbrella_targets.map { |t| t.platform_name }.uniq
 
   platforms.each do |platform|
-    sdks = []
+    dests = DESTINATIONS[platform] || []
+    dests = dests.reject { |d| d[:sdk] == :maccatalyst } unless build_ios_catalyst
 
-    case platform
-    when :ios then sdks = [(build_ios_catalyst ? 'maccatalyst' : nil), 'iphoneos', 'iphonesimulator'].compact
-    when :osx then sdks = ['macosx']
-    when :tvos then sdks = ['appletvos', 'appletvsimulator']
-    when :watchos then sdks = ['watchos', 'watchsimulator']
-    else raise "Unknown platform '#{target.platform_name}'" end
+    raise "Platform '#{target.platform_name}' has no destination configured in Rome" if dests.empty?
 
-    sdks.each do |sdk|  
-      skip_targets = sdk == "maccatalyst" ? skipping_umbrella_targets_for_catalyst : []
+    dests.each do |dest|
+      skip_targets = dest[:sdk] == :maccatalyst ? skipping_umbrella_targets_for_catalyst : []
       umbrella_targets = installer_context.umbrella_targets
         .select { |t| t.specs.any? && t.platform_name == platform && !skip_targets.include?(t.cocoapods_target_label) }
 
-      Pod::UI.puts "[*] Building all Pods for #{sdk} sdk"
-      xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
-
       umbrella_targets.each do |target|
-          merge_frameworks(build_dir, target, sdks, configuration)
+        Pod::UI.puts "[*] Building #{target.cocoapods_target_label} for sdk #{dest[:sdk]} and destination #{dest[:dest]}"
+        xcodebuild_all_targets_by_destination(sandbox, target, configuration, enable_bitcode, dest[:sdk], dest[:dest])
       end
     end
   end
 
   raise Pod::Informative, 'The build directory was not found in the expected location.' unless build_dir.directory?
 
-  # Make sure the device target overwrites anything in the simulator build, otherwise iTunesConnect
-  # can get upset about Info.plist containing references to the simulator SDK
-  built_products = Pathname.glob("build/#{configuration}-*")
+  rome_dir.rmtree if rome_dir.directory?
+  FileUtils.mkdir_p rome_dir
+
+  Pod::UI.puts "Creating XCFrameworks from built products in `/#{rome_dir.relative_path_from Pathname.pwd}`"
+
+
+  built_targets = installer_context.umbrella_targets
+    .map { |umbrella|
+      umbrella.specs
+        .map { |spec| spec.root }
+        .map { |rootSpec| { platform: umbrella.platform_name, pod_name: rootSpec.name, module_name: rootSpec.module_name } }
+    }
+    .flatten
+    .uniq
+  
+  built_targets.each do |spec|
+    dests = DESTINATIONS[spec[:platform]] || []
+    dests = dests.reject { |d| d[:sdk] == :maccatalyst } unless build_ios_catalyst
+
+    pod_name = spec[:pod_name]
+    module_name = spec[:module_name]
+    framework_products = dests.map { |d| "#{configuration}-#{d[:sdk]}/#{pod_name}/#{module_name}.framework" }
+    output_name = "#{module_name}.xcframework"
+
+    nonexist_variants = framework_products.filter { |path| not Pathname.new("#{build_dir}/#{path}").directory? }
+
+    if !nonexist_variants.empty?
+      Pod::UI.puts "[*] Skipping XCFramework creation for #{module_name}"
+      nonexist_variants.each do |path|
+        Pod::UI.puts "    - because it has no built product at #{path}"
+      end
+      Pod::UI.puts "    - It could be a Pod with only vendored frameworks."
+    else
+      Pod::UI.puts "[*] Creating XCFramework for #{module_name}"
+      framework_products.each do |path|
+        Pod::UI.puts "    - Variant: #{path}"
+      end
+  
+      args = %W(-create-xcframework -allow-internal-distribution -output #{rome_dir}/#{output_name})
+      framework_products.each do |path|
+        args += %W(-framework #{build_dir}/#{path})
+      end
+  
+      Pod::Executable.execute_command 'xcodebuild', args, true
+    end
+  end
+
+  Pod::UI.puts "Copying resources and vendored products to `/#{rome_dir.relative_path_from Pathname.pwd}`"
 
   resources = []
   copy_frameworks = []
-
-  destination.rmtree if destination.directory?
 
   installer_context.umbrella_targets.each do |umbrella|
     umbrella.specs.each do |spec|
@@ -145,19 +185,14 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
     end
   end
 
-  built_products.uniq!
   copy_frameworks.uniq!
   resources.uniq!
-
-  Pod::UI.puts "Copying built products, resources and vendored products to `#{destination.relative_path_from Pathname.pwd}`"
-
-  FileUtils.mkdir_p destination
   
-  (resources + copy_frameworks + built_products).each do |file|
-    FileUtils.cp_r file, destination, :remove_destination => true
+  (resources + copy_frameworks).each do |file|
+    FileUtils.cp_r file, rome_dir, :remove_destination => true
   end
 
-  copy_dsym_files(sandbox_root.parent + 'dSYM', configuration) if enable_dsym
+  # copy_dsym_files(sandbox_root.parent + 'dSYM', configuration) if enable_dsym
 
   if user_options["post_compile"]
     user_options["post_compile"].call(installer_context)
