@@ -30,11 +30,11 @@ def merge_frameworks(build_dir, target, sdks, configuration)
   Pod::UI.puts ""
 end
 
-def xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
+def xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitcode, sdk, run_in_x86_64)
   if sdk == "maccatalyst"
     # Mac Catalyst cannot be built using `-alltargets`. So we have to fallback to
     # build scheme by scheme.
-    xcodebuild_all_targets_catalyst(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
+    xcodebuild_all_targets_catalyst(sandbox, umbrella_targets, configuration, enable_bitcode, sdk, run_in_x86_64)
     return
   end
 
@@ -42,14 +42,22 @@ def xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitc
   args += %W(-sdk #{sdk})
   args << "BITCODE_GENERATION_MODE=bitcode" if enable_bitcode
 
-  Pod::Executable.execute_command 'xcodebuild', args, true
+  xcodebuild(args, run_in_x86_64)
 end
 
-def xcodebuild_all_targets_catalyst(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
+def xcodebuild_all_targets_catalyst(sandbox, umbrella_targets, configuration, enable_bitcode, sdk, run_in_x86_64)
   umbrella_targets.each do |target|
     args = %W(-project #{sandbox.project_path.realdirpath} -scheme #{target.cocoapods_target_label} -configuration #{configuration})
     args += ['-destination', "platform=macOS,arch=x86_64,variant=Mac Catalyst"]
     args << "BITCODE_GENERATION_MODE=bitcode" if enable_bitcode
+    xcodebuild(args, run_in_x86_64)
+  end
+end
+
+def xcodebuild(args, run_in_x86_64)
+  if run_in_x86_64
+    Pod::Executable.execute_command 'arch', %W(-x86_64 xcodebuild) + args, true
+  else
     Pod::Executable.execute_command 'xcodebuild', args, true
   end
 end
@@ -78,6 +86,7 @@ def copy_dsym_files(dsym_destination, configuration)
 end
 
 Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_context, user_options|
+  run_in_x86_64 = user_options.fetch('run_in_x86_64', false)
   enable_dsym = user_options.fetch('dsym', true)
   configuration = user_options.fetch('configuration', 'Debug')
   enable_bitcode = user_options.fetch('enable_bitcode', false)
@@ -116,7 +125,7 @@ Pod::HooksManager.register('cocoapods-rome', :post_install) do |installer_contex
         .select { |t| t.specs.any? && t.platform_name == platform && !skip_targets.include?(t.cocoapods_target_label) }
 
       Pod::UI.puts "[*] Building all Pods for #{sdk} sdk"
-      xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitcode, sdk)
+      xcodebuild_all_targets(sandbox, umbrella_targets, configuration, enable_bitcode, sdk, run_in_x86_64)
 
       umbrella_targets.each do |target|
           merge_frameworks(build_dir, target, sdks, configuration)
